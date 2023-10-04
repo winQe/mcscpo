@@ -147,7 +147,7 @@ class MLPMaxCostCritic(nn.Module):
 
     def __init__(self, obs_dim, hidden_sizes, activation):
         super().__init__()
-        self.v_net = mlp([obs_dim] + list(hidden_sizes) + [1], activation, output_activation=nn.Softplus)
+        self.v_net = mlp([obs_dim] + list(hidden_sizes) + [1], activation, output_activation=nn.Softplus) # Output of MaxCostCritics always positive
 
     def forward(self, obs):
         return torch.squeeze(self.v_net(obs), -1) # Critical to ensure v has right shape.
@@ -155,8 +155,7 @@ class MLPMaxCostCritic(nn.Module):
 
 
 class MLPActorCritic(nn.Module):
-
-
+    # Not the same network as CPO network
     def __init__(self, observation_space, action_space, 
                  hidden_sizes=(64,64), activation=nn.Tanh):
         super().__init__()
@@ -183,7 +182,7 @@ class MLPActorCritic(nn.Module):
             a = pi.sample()
             logp_a = self.pi._log_prob_from_distribution(pi, a)
             v = self.v(obs)
-            vc = self.vc(obs)
+            vc = self.vc(obs) # this vc isn't the same as CPO, this is a network to learn D (cost increase) instead of just cost
         return a.cpu().numpy(), v.cpu().numpy(), vc.cpu().numpy(), logp_a.cpu().numpy(), pi.mean.cpu().numpy(), torch.log(pi.stddev).cpu().numpy()
 
     def act(self, obs):

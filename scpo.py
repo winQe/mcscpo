@@ -7,14 +7,15 @@ import gym
 import time
 import copy
 import scpo_core as core
+import lqclp_adapter as lqclp
 from utils.logx import EpochLogger, setup_logger_kwargs, colorize
 from utils.mpi_pytorch import setup_pytorch_for_mpi, sync_params, mpi_avg_grads
 from utils.mpi_tools import mpi_fork, mpi_avg, proc_id, mpi_statistics_scalar, num_procs, mpi_sum
 from  safe_rl_envs.envs.engine import Engine as  safe_rl_envs_Engine
-from utils.safe_rl_env_config_noconti import configuration
+from utils.safe_rl_env_config import configuration
 import os.path as osp
 
-device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 EPS = 1e-8
 
 class SCPOBuffer:
@@ -31,14 +32,14 @@ class SCPOBuffer:
         self.rew_buf      = np.zeros(size, dtype=np.float32)
         self.ret_buf      = np.zeros(size, dtype=np.float32)
         self.val_buf      = np.zeros(size, dtype=np.float32)
-        self.cost_buf     = np.zeros(size, dtype=np.float32)
-        self.cost_ret_buf = np.zeros(size, dtype=np.float32)
+        self.cost_buf     = np.zeros(size, dtype=np.float32) # D buffer
+        self.cost_ret_buf = np.zeros(size, dtype=np.float32) # Vc
         self.cost_val_buf = np.zeros(size, dtype=np.float32)
         self.adc_buf      = np.zeros(size, dtype=np.float32)
         self.logp_buf     = np.zeros(size, dtype=np.float32)
         self.mu_buf       = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
         self.logstd_buf   = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
-        self.gamma, self.lam = gamma, lam
+        self.gamma, self.lam = gamma, lam # lam -> for GAE
         self.cgamma, self.clam = cgamma, clam # there is no discount for the cost for MMDP 
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
@@ -47,13 +48,13 @@ class SCPOBuffer:
         Append one timestep of agent-environment interaction to the buffer.
         """
         assert self.ptr < self.max_size     # buffer has to have room so you can store
-        self.obs_buf[self.ptr]      = obs
-        self.act_buf[self.ptr]      = act
-        self.rew_buf[self.ptr]      = rew
-        self.val_buf[self.ptr]      = val
+        self.obs_buf[self.ptr]      = obs   # augmented state space
+        self.act_buf[self.ptr]      = act   # actions (vector of probabilities)
+        self.rew_buf[self.ptr]      = rew   # reward
+        self.val_buf[self.ptr]      = val   # value function return at current (s,t)
         self.logp_buf[self.ptr]     = logp
-        self.cost_buf[self.ptr]     = cost
-        self.cost_val_buf[self.ptr] = cost_val
+        self.cost_buf[self.ptr]     = cost  # actual cost received at timestep
+        self.cost_val_buf[self.ptr] = cost_val # D value (we learn D not Jc here I guess) 
         self.mu_buf[self.ptr]       = mu
         self.logstd_buf[self.ptr]   = logstd
         self.ptr += 1
@@ -82,17 +83,17 @@ class SCPOBuffer:
         
         # the next two lines implement GAE-Lambda advantage calculation
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
-        self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
+        self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam) # A
         
         # cost advantage calculation
         cost_deltas = costs[:-1] + self.cgamma * cost_vals[1:] - cost_vals[:-1]
-        self.adc_buf[path_slice] = core.discount_cumsum(cost_deltas, self.cgamma * self.clam)
+        self.adc_buf[path_slice] = core.discount_cumsum(cost_deltas, self.cgamma * self.clam) # AD
         
         # the next line computes rewards-to-go, to be targets for the value function
-        self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1]
+        self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1] # Actual return
         
         # costs-to-go, targets for the cost value function
-        self.cost_ret_buf[path_slice] = core.discount_cumsum(costs, self.cgamma)[:-1]
+        self.cost_ret_buf[path_slice] = core.discount_cumsum(costs, self.cgamma)[:-1] # Actual D
         
         self.path_start_idx = self.ptr
 
@@ -104,12 +105,14 @@ class SCPOBuffer:
         """
         assert self.ptr == self.max_size    # buffer has to be full before you can get
         self.ptr, self.path_start_idx = 0, 0
-        # the next two lines implement the advantage normalization trick
+        # the next two lines implement the advantage normalization trick, std = 1, mean = 0
         adv_mean, adv_std = mpi_statistics_scalar(self.adv_buf)
         self.adv_buf = (self.adv_buf - adv_mean) / adv_std
+
         # center cost advantage, but don't scale
         adc_mean, adc_std = mpi_statistics_scalar(self.adc_buf)
         self.adc_buf = (self.adc_buf - adc_mean)
+
         data = dict(obs=torch.FloatTensor(self.obs_buf).to(device), 
                     act=torch.FloatTensor(self.act_buf).to(device), 
                     ret=torch.FloatTensor(self.ret_buf).to(device),
@@ -295,6 +298,8 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # Instantiate environment
     env = env_fn() 
+    # Augmented state space here
+    # TODO: may need to increase this (+1) based on the number of constraints that we have
     obs_dim = (env.observation_space.shape[0]+1,) # this is especially designed for SCPO, since we require an additional M in the observation space 
     act_dim = env.action_space.shape
 
@@ -311,6 +316,9 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # Set up experience buffer
     local_steps_per_epoch = int(steps_per_epoch / num_procs())
     buf = SCPOBuffer(obs_dim, act_dim, local_steps_per_epoch, gamma, lam)
+
+    # Setup LQCLP Solver
+    solver = lqclp.LQCLPAdapter(var_counts[0])
     
     def compute_kl_pi(data, cur_pi):
         """
@@ -334,10 +342,10 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         """
         obs, act, adc, logp_old = data['obs'], data['act'], data['adc'], data['logp']
         
-        # Surrogate cost function 
+        # Surrogate cost function, D cost not C
         pi, logp = cur_pi(obs, act)
         ratio = torch.exp(logp - logp_old)
-        surr_cost = (ratio * adc).sum()
+        surr_cost = (ratio * adc).sum() #different from cpo one, should still equate to mean
         epochs = len(logger.epoch_dict['EpCost'])
         surr_cost /= epochs # the average 
         
@@ -428,14 +436,15 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # get Hessian for KL divergence
         kl_div = compute_kl_pi(data, ac.pi)
         Hx = lambda x: auto_hession_x(kl_div, ac.pi, torch.FloatTensor(x).to(device))
+        H = auto_hession_x(kl_div, ac.pi, torch.FloatTensor(x).to(device))
         
         # linearize the loss objective and cost function
         g = auto_grad(loss_pi, ac.pi) # get the loss flatten gradient evaluted at pi old 
-        b = auto_grad(surr_cost, ac.pi) # get the cost flatten gradient evaluted at pi old
+        b = auto_grad(surr_cost, ac.pi) # get the cost increase flatten gradient evaluted at pi old
         
         # get the Episode cost
         EpLen = logger.get_stats('EpLen')[0]
-        EpMaxCost = logger.get_stats('EpMaxCost')[0]
+        EpMaxCost = logger.get_stats('EpMaxCost')[0] #EpMaxCost = M, different compared to EpCost
         
         # cost constraint linearization
         '''
@@ -448,12 +457,16 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         '''
         fixed target cost, in the context of sum adv of epoch
         '''
+        # if negative means M (maximum statewise cost) cost limit, thus infeasible
         c = EpMaxCost - target_cost
         
         # core calculation for SCPO
-        Hinv_g   = cg(Hx, g)             # Hinv_g = H \ g        
+        # Conjugate Gradient to calculate H^-1
+        Hinv_g   = cg(Hx, g)             # Hinv_g = H^-1 * g        
         approx_g = Hx(Hinv_g)           # g
         # q        = np.clip(Hinv_g.T @ approx_g, 0.0, None)  # g.T / H @ g
+        # Analytical solution from the CPO paper (Appendix 10.2)
+        # q = g.T * H^-1 * g
         q        = Hinv_g.T @ approx_g
         
         # solve QP
@@ -461,6 +474,8 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # Determine optim_case (switch condition for calculation,
         # based on geometry of constrained optimization problem)
         if b.T @ b <= 1e-8 and c < 0:
+            # cost grad is zero
+            # all area in trust region satisfy the constraints, don't need to consider constraints for this optimization
             Hinv_b, r, s, A, B = 0, 0, 0, 0, 0
             optim_case = 4
         else:
@@ -469,6 +484,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             r = Hinv_b.T @ approx_g          # b^T H^{-1} g
             s = Hinv_b.T @ Hx(Hinv_b)        # b^T H^{-1} b
             A = q - r**2 / s            # should be always positive (Cauchy-Shwarz)
+            # whether or not the plane of the linear constraint intersects the quadratic trust region, CPO paper appendix
             B = 2*target_kl - c**2 / s  # does safety boundary intersect trust region? (positive = yes)
 
             # c < 0: feasible
@@ -476,6 +492,8 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             if c < 0 and B < 0:
                 # point in trust region is feasible and safety boundary doesn't intersect
                 # ==> entire trust region is feasible
+                # If c2=s − δ > 0 and c < 0, then the quadratic trust region lies entirely within the linear constraint-satisfying halfspace,
+                # and we can remove the linear constraint without changing the optimization problem
                 optim_case = 3
             elif c < 0 and B >= 0:
                 # x = 0 is feasible and safety boundary intersects
@@ -497,11 +515,14 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         
         # get optimal theta-theta_k direction
         if optim_case in [3,4]:
+            # all area in trust region satisfy the constraints, don't need to consider constraints for this optimization
             lam = np.sqrt(q / (2*target_kl))
             nu = 0
         elif optim_case in [1,2]:
+            # bounds
             LA, LB = [0, r /c], [r/c, np.inf]
             LA, LB = (LA, LB) if c < 0 else (LB, LA)
+            # do the projection
             proj = lambda x, L : max(L[0], min(L[1], x))
             lam_a = proj(np.sqrt(A/B), LA)
             lam_b = proj(np.sqrt(q/(2*target_kl)), LB)
@@ -513,11 +534,25 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         else:
             lam = 0
             # nu = np.sqrt(2 * target_kl / (np.clip(s,0.,None)+EPS))
+             # decrease the constraint value, infeasibility recovery
             nu = np.sqrt(2 * target_kl / (s+EPS))
             
         # normal step if optim_case > 0, but for optim_case =0,
         # perform infeasible recovery: step to purely decrease cost
-        x_direction = (1./(lam+EPS)) * (Hinv_g + nu * Hinv_b) if optim_case > 0 else nu * Hinv_b
+        # step in the paper
+        x_direction1 = (1./(lam+EPS)) * (Hinv_g + nu * Hinv_b) if optim_case > 0 else nu * Hinv_b
+        # print("x_direction with analytical duality solution = "+ x_direction)
+        # print("x_direction1 dims" + x_direction1.shape)
+        breakpoint()
+
+        # Solve optimization problem with a solver
+        print("Calling solver to solve the optimization problem")
+        solver.update_parameters(g,b,c,Hx,target_kl)
+        x_direction = solver.optimal_x
+        # print("x_direction dims" + x_direction.shape)
+        breakpoint()
+        print("x_direction type" + type(x_direction))
+
         
         # copy an actor to conduct line search 
         actor_tmp = copy.deepcopy(ac.pi)
@@ -531,6 +566,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             return kl, pi_l, surr_cost
         
         # update the policy such that the KL diveragence constraints are satisfied and loss is decreasing
+        # backtracking line search to enforce constraint satisfaction
         for j in range(backtrack_iters):
             try:
                 kl, pi_l_new, surr_cost_new = set_and_eval(backtrack_coeff**j)
@@ -539,7 +575,6 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             
             if (kl.item() <= target_kl and
                 (pi_l_new.item() <= pi_l_old if optim_case > 1 else True) and # if current policy is feasible (optim>1), must preserve pi loss
-                # surr_cost_new - surr_cost_old <= max(-c,0)):
                 surr_cost_new - surr_cost_old <= max(-c,-cost_reduction)):
                 
                 print(colorize(f'Accepting new params at step %d of line search.'%j, 'green', bold=False))
@@ -587,6 +622,8 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             break
         except:
             print('reset environment is wrong, try next reset')
+    
+    # Initialize the environment and cost all = 0
     ep_cost_ret, ep_cost = 0, 0
     cum_cost = 0
     M = 0. # initialize the current maximum cost
@@ -596,6 +633,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
         for t in range(local_steps_per_epoch):
+            # Forward, get action and value estimates (cost and reward) for the current observation
             a, v, vc, logp, mu, logstd = ac.step(torch.as_tensor(o_aug, dtype=torch.float32))
             
             try: 
@@ -613,17 +651,18 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 first_step = False
             else:
                 # the second and forward step of each episode
+                # cost increase = D, to be constrained to ensure state-wise safety, constraining maximum violation in state transition -> enforcing statewise safety
                 cost_increase = max(info['cost'] - M, 0) # define the new observation and cost for Maximum Markov Decision Process
                 M_next = M + cost_increase
              
             # Track cumulative cost over training
-            cum_cost += info['cost']
+            cum_cost += info['cost'] # not equal to M
             ep_ret += r
             ep_cost_ret += info['cost'] * (gamma ** t)
             ep_cost += info['cost']
             ep_len += 1
 
-            # save and log
+            # save and log, buffer is different, store 
             buf.store(o_aug, a, r, v, logp, cost_increase, vc, mu, logstd)
             logger.store(VVals=v)
             
@@ -649,6 +688,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 buf.finish_path(v, vc)
                 if terminal:
                     # only save EpRet / EpLen / EpCostRet if trajectory finished
+                    # EpMaxCost = Max MDP M, while EpCost is just CMDP, it's Maximum state-wise cost, cannot be canceled out with negative cost if that even exist
                     logger.store(EpRet=ep_ret, EpLen=ep_len, EpCostRet=ep_cost_ret, EpCost=ep_cost, EpMaxCost=M)
                 while True:
                     try:
