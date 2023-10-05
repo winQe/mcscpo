@@ -7,7 +7,7 @@ import gym
 import time
 import copy
 import scpo_core as core
-import lqclp_adapter as lqclp
+import qp_solver as solver
 from utils.logx import EpochLogger, setup_logger_kwargs, colorize
 from utils.mpi_pytorch import setup_pytorch_for_mpi, sync_params, mpi_avg_grads
 from utils.mpi_tools import mpi_fork, mpi_avg, proc_id, mpi_statistics_scalar, num_procs, mpi_sum
@@ -317,8 +317,8 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     local_steps_per_epoch = int(steps_per_epoch / num_procs())
     buf = SCPOBuffer(obs_dim, act_dim, local_steps_per_epoch, gamma, lam)
 
-    # Setup LQCLP Solver
-    solver = lqclp.LQCLPAdapter(var_counts[0])
+    # Setup QP Solver
+    qp_solver = solver.QuadraticOptimizer(1)
     
     def compute_kl_pi(data, cur_pi):
         """
@@ -436,7 +436,6 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # get Hessian for KL divergence
         kl_div = compute_kl_pi(data, ac.pi)
         Hx = lambda x: auto_hession_x(kl_div, ac.pi, torch.FloatTensor(x).to(device))
-        H = auto_hession_x(kl_div, ac.pi, torch.FloatTensor(x).to(device))
         
         # linearize the loss objective and cost function
         g = auto_grad(loss_pi, ac.pi) # get the loss flatten gradient evaluted at pi old 
@@ -473,6 +472,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # decide optimization cases (feas/infeas, recovery)
         # Determine optim_case (switch condition for calculation,
         # based on geometry of constrained optimization problem)
+        paper_timer = time.time()
         if b.T @ b <= 1e-8 and c < 0:
             # cost grad is zero
             # all area in trust region satisfy the constraints, don't need to consider constraints for this optimization
@@ -537,23 +537,35 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
              # decrease the constraint value, infeasibility recovery
             nu = np.sqrt(2 * target_kl / (s+EPS))
             
+        lam_paper = lam
+        nu_paper = nu
+        print("lambda and nu value from paper = [{},{}]".format(lam_paper,nu_paper))
+        paper_end = time.time()
+        paper_time = paper_end - paper_timer
+        print(f"Time taken: {paper_time} seconds")
+
+
+        # Start timing
+        solver_start = time.time()
+
+        # Use QP library to solve the QP
+        qp_solver.solve(c,q,r,s,target_kl)
+        lam,nu,status = qp_solver.get_solution()
+        if status == "Infeasible":
+            # decrease the constraint value, infeasibility recovery
+            nu = np.sqrt(2 * target_kl / (s+EPS))
+
+        # Stop timing
+        solver_end = time.time()
+
+        print("lambda and nu value from solver = [{},{}]".format(lam,nu))
+        print(f"Time taken: {solver_end - solver_start} seconds")
+
         # normal step if optim_case > 0, but for optim_case =0,
         # perform infeasible recovery: step to purely decrease cost
         # step in the paper
-        x_direction1 = (1./(lam+EPS)) * (Hinv_g + nu * Hinv_b) if optim_case > 0 else nu * Hinv_b
-        # print("x_direction with analytical duality solution = "+ x_direction)
-        # print("x_direction1 dims" + x_direction1.shape)
-        breakpoint()
+        x_direction = (1./(lam+EPS)) * (Hinv_g + nu * Hinv_b) if optim_case > 0 else nu * Hinv_b
 
-        # Solve optimization problem with a solver
-        print("Calling solver to solve the optimization problem")
-        solver.update_parameters(g,b,c,Hx,target_kl)
-        x_direction = solver.optimal_x
-        # print("x_direction dims" + x_direction.shape)
-        breakpoint()
-        print("x_direction type" + type(x_direction))
-
-        
         # copy an actor to conduct line search 
         actor_tmp = copy.deepcopy(ac.pi)
         def set_and_eval(step):
