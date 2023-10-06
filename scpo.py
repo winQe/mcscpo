@@ -539,6 +539,11 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             
         lam_paper = lam
         nu_paper = nu
+        # normal step if optim_case > 0, but for optim_case =0,
+        # perform infeasible recovery: step to purely decrease cost
+        # step in the paper
+        x_direction_paper = (1./(lam+EPS)) * (Hinv_g + nu * Hinv_b) if optim_case > 0 else nu * Hinv_b
+
         print("lambda and nu value from paper = [{},{}]".format(lam_paper,nu_paper))
         paper_end = time.time()
         paper_time = paper_end - paper_timer
@@ -554,6 +559,9 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if status == "Infeasible":
             # decrease the constraint value, infeasibility recovery
             nu = np.sqrt(2 * target_kl / (s+EPS))
+            x_direction = nu * Hinv_b
+        else:
+            x_direction = (1./(lam+EPS)) * (Hinv_g + nu * Hinv_b) 
 
         # Stop timing
         solver_end = time.time()
@@ -561,10 +569,20 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         print("lambda and nu value from solver = [{},{}]".format(lam,nu))
         print(f"Time taken: {solver_end - solver_start} seconds")
 
-        # normal step if optim_case > 0, but for optim_case =0,
-        # perform infeasible recovery: step to purely decrease cost
-        # step in the paper
-        x_direction = (1./(lam+EPS)) * (Hinv_g + nu * Hinv_b) if optim_case > 0 else nu * Hinv_b
+        # Quantitative Comparison
+        # L2 distance
+        l2_distance = np.linalg.norm(x_direction_paper - x_direction)
+        print(f"L2 distance between methods: {l2_distance}")
+
+        # Cosine similarity
+        dot_product = np.dot(x_direction_paper, x_direction)
+        norm_product = np.linalg.norm(x_direction_paper) * np.linalg.norm(x_direction)
+        cosine_similarity = dot_product / (norm_product + EPS)
+        print(f"Cosine similarity between methods: {cosine_similarity}")
+
+        # L1 difference
+        l1_difference = np.mean(np.abs(x_direction_paper - x_direction))
+        print(f"Mean absolute difference between methods: {l1_difference}")
 
         # copy an actor to conduct line search 
         actor_tmp = copy.deepcopy(ac.pi)

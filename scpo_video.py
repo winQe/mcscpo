@@ -10,7 +10,7 @@ import time
 from utils.logx import EpochLogger, setup_logger_kwargs, colorize
  
 from  safe_rl_envs.envs.engine import Engine as  safe_rl_envs_Engine
-from utils.safe_rl_env_config_noconti import configuration
+from utils.safe_rl_env_config import configuration
 import os.path as osp
 import cv2
 import matplotlib.pyplot as plt
@@ -102,8 +102,12 @@ def replay(env_fn, model_path=None, video_name=None, max_epoch=1):
     existence = os.path.exists(out_path)
     if not existence:
         os.makedirs(out_path)
-    video_writer = cv2.VideoWriter(os.path.join(out_path,f'{video_name}.mp4'),
-                                cv2.VideoWriter_fourcc(*'FMP4'), fps, dsize)
+    video_writer = cv2.VideoWriter(
+            os.path.join(out_path, f'{video_name}.mp4'),
+            cv2.VideoWriter_fourcc(*'mp4v'),  # Change 'FMP4' to 'mp4v'
+            fps,
+            dsize
+        )
 
     for frame in video_array:
         resized = cv2.resize(frame, dsize=dsize)
