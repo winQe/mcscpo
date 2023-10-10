@@ -1,14 +1,18 @@
 import numpy as np
-from pyomo.environ import ConcreteModel, Var, Objective, Constraint, SolverFactory, maximize, NonNegativeReals
+from pyomo.environ import (ConcreteModel, Var, Objective, Constraint, SolverFactory,
+                           maximize, NonNegativeReals, RangeSet)
 
 class QuadraticOptimizer:
     def __init__(self, m):
         self.m = m
         self.model = ConcreteModel()
         
+        # Index set for nu
+        self.model.I = RangeSet(self.m)
+        
         # Define variables
         self.model.lambda_var = Var(domain=NonNegativeReals)
-        self.model.nu = Var(domain=NonNegativeReals)
+        self.model.nu = Var(self.model.I, domain=NonNegativeReals)
         
         # Store solutions
         self.optimal_lambda = None
@@ -17,8 +21,9 @@ class QuadraticOptimizer:
     def solve(self, C, q, r, S, delta):
         # Define the objective
         def objective_rule(mod):
-            return (-1 / (2 * mod.lambda_var + 1e-8) * (q + 2 * r * mod.nu + mod.nu ** 2 * S) 
-                    + mod.nu * C - (delta * mod.lambda_var / 2))
+            return (-1 / (2 * mod.lambda_var + 1e-8) * (q + sum(2 * r[i-1] * mod.nu[i] for i in mod.I) 
+                    + sum(sum(mod.nu[i] * S[i-1][j-1] * mod.nu[j] for j in mod.I) for i in mod.I))
+                    + sum(mod.nu[i] * C[i-1] for i in mod.I) - (delta * mod.lambda_var / 2))
         
         self.model.obj = Objective(rule=objective_rule, sense=maximize)
 

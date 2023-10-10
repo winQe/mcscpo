@@ -156,12 +156,12 @@ class MLPMaxCostCritic(nn.Module):
 
 class MLPActorCritic(nn.Module):
     # Not the same network as CPO network
-    def __init__(self, observation_space, action_space, 
+    def __init__(self, observation_space, action_space, num_constraints,
                  hidden_sizes=(64,64), activation=nn.Tanh):
         super().__init__()
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        obs_dim = observation_space.shape[0] + 1 # this is especially designed for SCPO, since we require an additional M in the observation space 
+        # this is especially designed for multi-constraint SCPO, since we require additional M based on the number of constraints
+        obs_dim = observation_space.shape[0] + num_constraints 
 
         # policy builder depends on action space
         if isinstance(action_space, Box):
@@ -172,8 +172,8 @@ class MLPActorCritic(nn.Module):
         # build value function
         self.v  = MLPCritic(obs_dim, hidden_sizes, activation).to(self.device)
         
-        # build cost value function
-        self.vc  = MLPMaxCostCritic(obs_dim, hidden_sizes, activation).to(self.device)
+        # build cost value functions networks
+        self.vcs = nn.ModuleList([MLPMaxCostCritic(obs_dim, hidden_sizes, activation) for _ in range(num_constraints)])
 
     def step(self, obs):
         with torch.no_grad():
@@ -182,8 +182,10 @@ class MLPActorCritic(nn.Module):
             a = pi.sample()
             logp_a = self.pi._log_prob_from_distribution(pi, a)
             v = self.v(obs)
-            vc = self.vc(obs) # this vc isn't the same as CPO, this is a network to learn D (cost increase) instead of just cost
-        return a.cpu().numpy(), v.cpu().numpy(), vc.cpu().numpy(), logp_a.cpu().numpy(), pi.mean.cpu().numpy(), torch.log(pi.stddev).cpu().numpy()
+            # this vc isn't the same as CPO, this is a network to learn D (cost increase) instead of just cost
+            vcs = [vc(obs) for vc in self.vcs]  # Iterate over each vc and get their outputs
+
+        return a.cpu().numpy(), v.cpu().numpy(), [vc_out.cpu().numpy() for vc_out in vcs], logp_a.cpu().numpy(), pi.mean.cpu().numpy(), torch.log(pi.stddev).cpu().numpy()
 
     def act(self, obs):
         return self.step(obs)[0]
