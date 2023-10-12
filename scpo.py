@@ -148,7 +148,7 @@ def cg(Ax, b, cg_iters=100):
         alpha = r_dot_old / (np.dot(p, z) + EPS)
         x += alpha * p
         r -= alpha * z
-        r_dot_new = np.dot(r,r)
+        r_dot_new = np.dot(r,r.T)
         p = r + (r_dot_new / r_dot_old) * p
         r_dot_old = r_dot_new
         # early stopping 
@@ -306,7 +306,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         num_constraints (int): Number of constraints to be enforced
 
     """
-
+    cost_reduction = np.full(num_constraints, cost_reduction)
     model_save=True
     assert len(target_cost) == num_constraints
 
@@ -401,38 +401,40 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         return ((ac.v(obs) - ret)**2).mean()
     
     # Set up function for computing cost loss 
-    def compute_loss_vc(data):
-        obs, cost_ret = data['obs'], data['cost_ret']
-        
-        # down sample the imbalanced data 
+    def compute_loss_vc(data, index, vc_net):
+        obs, cost_ret = data['obs'], data['cost_ret'][:,index]
+
+        # Split the data into positive and zero cost returns.
+        # This is to address potential imbalance in the dataset.
         cost_ret_positive = cost_ret[cost_ret > 0]
         obs_positive = obs[cost_ret > 0]
-        
         cost_ret_zero = cost_ret[cost_ret == 0]
         obs_zero = obs[cost_ret == 0]
         
         if len(cost_ret_zero) > 0:
+            # Calculate the fraction of positive returns to zero returns
             frac = len(cost_ret_positive) / len(cost_ret_zero) 
             
+            # If there are fewer positive returns than zero returns
             if frac < 1. :# Fraction of elements to keep
+                # Randomly down-sample the zero returns to match the number of positive returns.
                 indices = np.random.choice(len(cost_ret_zero), size=int(len(cost_ret_zero)*frac), replace=False)
                 cost_ret_zero_downsample = cost_ret_zero[indices]
                 obs_zero_downsample = obs_zero[indices]
                 
-                # concatenate 
+                # Combine the positive and down-sampled zero returns
                 obs_downsample = torch.cat((obs_positive, obs_zero_downsample), dim=0)
                 cost_ret_downsample = torch.cat((cost_ret_positive, cost_ret_zero_downsample), dim=0)
             else:
-                # no need to downsample 
+                # If there's no need to down-sample, use the entire dataset
                 obs_downsample = obs
                 cost_ret_downsample = cost_ret
         else:
-            # no need to downsample 
+            # If there are no zero returns in the dataset, use the entire dataset
             obs_downsample = obs
             cost_ret_downsample = cost_ret
-            
-        # downsample cost return zero 
-        return ((ac.vc(obs_downsample) - cost_ret_downsample)**2).mean()
+        # Calculate and return the mean squared error loss between the cost network and the actual cost return
+        return ((vc_net(obs_downsample) - cost_ret_downsample)**2).mean()
 
     get_costs = lambda info, constraints: np.array([info[key] for key in constraints])
     get_d = lambda info, constraints: np.array([info[key] for key in constraints if key != 'cost'])
@@ -453,7 +455,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # log the loss objective and cost function and value function for old policy
         pi_l_old, pi_info_old = compute_loss_pi(data, ac.pi)
         pi_l_old = pi_l_old.item()
-        surr_cost_old = compute_cost_pi(data, ac.pi)
+        surr_cost_old = compute_cost_pi(data, ac.pi).detach().cpu().numpy()
         # surr_cost_old = surr_cost_old.item()
         v_l_old = compute_loss_v(data).item()
 
@@ -467,8 +469,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         
         # linearize the loss objective and cost function
         g = auto_grad(loss_pi, ac.pi) # get the loss flatten gradient evaluted at pi old 
-        b = np.array(auto_grad(surr_cost, ac.pi)) # get the cost increase flatten gradient evaluted at pi old
-        
+        B = np.array(auto_grad(surr_cost, ac.pi)) # get the cost increase flatten gradient evaluted at pi old
         # get the Episode cost
         EpLen = logger.get_stats('EpLen')[0]
         # should be an array, not right
@@ -497,13 +498,14 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # q = g.T * H^-1 * g
         q        = Hinv_g.T @ approx_g
 
-        Hinv_b = cg(Hx, b)                # H^{-1} b
-        breakpoint()
-        r = Hinv_b.T @ approx_g          # b^T H^{-1} g
-        s = Hinv_b.T @ Hx(Hinv_b)        # b^T H^{-1} b
-        A = q - r**2 / s            # should be always positive (Cauchy-Shwarz)
-        # whether or not the plane of the linear constraint intersects the quadratic trust region, CPO paper appendix
-        B = 2*target_kl - c**2 / s  # does safety boundary intersect trust region? (positive = yes)
+        Hinv_B = np.array([cg(Hx, b) for b in B])
+        approx_B = np.array([Hx(Hinv_b) for Hinv_b in Hinv_B])
+        r = Hinv_B @ approx_g          # b^T H^{-1} g
+        S = Hinv_B @ approx_B.T        # b^T H^{-1} b
+
+        # A = q - r**2 / s            # should be always positive (Cauchy-Shwarz)
+        # # whether or not the plane of the linear constraint intersects the quadratic trust region, CPO paper appendix
+        # B = 2*target_kl - c**2 / s  # does safety boundary intersect trust region? (positive = yes)
         
         # # solve QP
         # # decide optimization cases (feas/infeas, recovery)
@@ -593,35 +595,45 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         solver_start = time.time()
 
         # Use QP library to solve the QP
-        qp_solver.solve(c,q,r,s,target_kl)
+        qp_solver.solve(c,q,r,S,target_kl)
         lam,nu,status = qp_solver.get_solution()
         if status == "Infeasible":
             # decrease the constraint value, infeasibility recovery
-            nu = np.sqrt(2 * target_kl / (s+EPS))
-            x_direction = nu * Hinv_b
+            #
+            breakpoint()
+            # First, check which constraints are infeasible
+            # Infeasible if c < 0 and c**2/s − δ < 
+            # (the intersection of the quadratic trust region and linear constraint-satisfying halfspace is empty)
+            
+            s = np.array([approx_B[i] @ Hinv_B[i] for i in range(approx_B.shape[0])])
+            # if element = 1, corresponding constraint is inseasible, 0 means it's not
+            infeasibility = np.where((c**2/s - target_kl > 0) & (c > 0), 1, 0)
+            nu = np.sqrt(2 * target_kl / (s+EPS)) * infeasibility
+            x_direction = np.sum(nu * Hinv_B,axis=1)
         else:
-            x_direction = (1./(lam+EPS)) * (Hinv_g + nu * Hinv_b) 
+            x_direction = (1./(lam+EPS)) * (Hinv_g + nu @ Hinv_B) 
 
         # Stop timing
         solver_end = time.time()
 
+        np.set_printoptions(precision=4, suppress=True)
         print("lambda and nu value from solver = [{},{}]".format(lam,nu))
         print(f"Time taken: {solver_end - solver_start} seconds")
 
-        # Quantitative Comparison
-        # L2 distance
-        l2_distance = np.linalg.norm(x_direction_paper - x_direction)
-        print(f"L2 distance between methods: {l2_distance}")
+        # # Quantitative Comparison
+        # # L2 distance
+        # l2_distance = np.linalg.norm(x_direction_paper - x_direction)
+        # print(f"L2 distance between methods: {l2_distance}")
 
-        # Cosine similarity
-        dot_product = np.dot(x_direction_paper, x_direction)
-        norm_product = np.linalg.norm(x_direction_paper) * np.linalg.norm(x_direction)
-        cosine_similarity = dot_product / (norm_product + EPS)
-        print(f"Cosine similarity between methods: {cosine_similarity}")
+        # # Cosine similarity
+        # dot_product = np.dot(x_direction_paper, x_direction)
+        # norm_product = np.linalg.norm(x_direction_paper) * np.linalg.norm(x_direction)
+        # cosine_similarity = dot_product / (norm_product + EPS)
+        # print(f"Cosine similarity between methods: {cosine_similarity}")
 
-        # L1 difference
-        l1_difference = np.mean(np.abs(x_direction_paper - x_direction))
-        print(f"Mean absolute difference between methods: {l1_difference}")
+        # # L1 difference
+        # l1_difference = np.mean(np.abs(x_direction_paper - x_direction))
+        # print(f"Mean absolute difference between methods: {l1_difference}")
 
         # copy an actor to conduct line search 
         actor_tmp = copy.deepcopy(ac.pi)
@@ -641,10 +653,10 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 kl, pi_l_new, surr_cost_new = set_and_eval(backtrack_coeff**j)
             except:
                 import ipdb; ipdb.set_trace()
-            
+
             if (kl.item() <= target_kl and
-                (pi_l_new.item() <= pi_l_old if optim_case > 1 else True) and # if current policy is feasible (optim>1), must preserve pi loss
-                surr_cost_new - surr_cost_old <= max(-c,-cost_reduction)):
+                (pi_l_new.item() <= pi_l_old if status != "Infeasible" else True) and # if current policy is feasible (optim>1), must preserve pi loss
+                np.all((surr_cost_new.detach().cpu().numpy() - surr_cost_old) <= np.maximum(-c,-cost_reduction))):
                 
                 print(colorize(f'Accepting new params at step %d of line search.'%j, 'green', bold=False))
                 
@@ -668,12 +680,14 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             
         # Cost value function learning
         for _ in range(train_vc_iters):
-            #TODO: haven't done -> this part needs to be looped
-            vcf_optimizers.zero_grad()
-            loss_vc = compute_loss_vc(data)
-            loss_vc.backward()
-            mpi_avg_grads(ac.vc)    # average grads across MPI processes
-            vcf_optimizers.step()
+            index = 0
+            for optimizer, vc_net in zip(vcf_optimizers, ac.vcs):
+                optimizer.zero_grad()
+                loss_vc = compute_loss_vc(data,index,vc_net)  # Assuming compute_loss_vc can take a specific vc as an argument
+                loss_vc.backward()
+                mpi_avg_grads(vc_net)  # average grads across MPI processes for the specific vc
+                optimizer.step()
+                index += 1
 
         # Log changes from update        
         kl, ent = pi_info['kl'], pi_info_old['ent']
@@ -681,7 +695,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                      KL=kl, Entropy=ent,
                      DeltaLossPi=(loss_pi.item() - pi_l_old),
                      DeltaLossV=(loss_v.item() - v_l_old),
-                     DeltaLossCost=(surr_cost.item() - surr_cost_old))
+                     DeltaLossCost=(surr_cost.detach().cpu().numpy() - surr_cost_old))
 
     # Prepare for interaction with environment
     start_time = time.time()
@@ -766,7 +780,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 if terminal:
                     # only save EpRet / EpLen / EpCostRet if trajectory finished
                     # EpMaxCost = Max MDP M, while EpCost is just CMDP, it's Maximum state-wise cost, cannot be canceled out with negative cost if that even exist
-                    logger.store(EpRet=ep_ret, EpLen=ep_len, EpCostRet=ep_cost_ret[-1], EpCost=ep_cost[-1], EpMaxCost=M)
+                    logger.store(EpRet=ep_ret, EpLen=ep_len, EpCostRet=ep_cost_ret, EpCost=ep_cost, EpMaxCost=M)
                 while True:
                     try:
                         o, ep_ret, ep_len = env.reset(), 0, 0
