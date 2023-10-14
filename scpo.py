@@ -7,7 +7,7 @@ import gym
 import time
 import copy
 import scpo_core as core
-import qp_solver as solver
+import scipy_solver as solver
 from utils.logx import EpochLogger, setup_logger_kwargs, colorize
 from utils.mpi_pytorch import setup_pytorch_for_mpi, sync_params, mpi_avg_grads
 from utils.mpi_tools import mpi_fork, mpi_avg, proc_id, mpi_statistics_scalar, num_procs, mpi_sum
@@ -138,7 +138,7 @@ def assign_net_param_from_flat(param_vec, net):
         param.data.copy_(torch.from_numpy(param_vec[ptr:ptr+s]).reshape(param.shape))
         ptr += s
 
-def cg(Ax, b, cg_iters=100):
+def cg(Ax, b, cg_iters=2500):
     x = np.zeros_like(b)
     r = b.copy() # Note: should be 'b - Ax', but for x=0, Ax=0. Change if doing warm start.
     p = r.copy()
@@ -341,18 +341,14 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # Set up experience buffer
     local_steps_per_epoch = int(steps_per_epoch / num_procs())
     buf = SCPOBuffer(obs_dim, act_dim, local_steps_per_epoch, num_constraints, gamma, lam)
-
-    # Setup QP Solver
-    qp_solver = solver.QuadraticOptimizer(num_constraints)
     
     def compute_kl_pi(data, cur_pi):
         """
         Return the sample average KL divergence between old and new policies
         """
         obs, act, adv, logp_old, mu_old, logstd_old = data['obs'], data['act'], data['adv'], data['logp'], data['mu'], data['logstd']
-        
         # Average KL Divergence  
-        pi, logp = cur_pi(obs, act)
+        # pi, logp = cur_pi(obs, act)
         # average_kl = (logp_old - logp).mean()
         average_kl = cur_pi._d_kl(
             torch.as_tensor(obs, dtype=torch.float32),
@@ -465,6 +461,8 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         
         # get Hessian for KL divergence
         kl_div = compute_kl_pi(data, ac.pi)
+        
+        # Compute dot product of Hessian matrix with x
         Hx = lambda x: auto_hession_x(kl_div, ac.pi, torch.FloatTensor(x).to(device))
         
         # linearize the loss objective and cost function
@@ -493,15 +491,46 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # Conjugate Gradient to calculate H^-1
         Hinv_g   = cg(Hx, g)             # Hinv_g = H^-1 * g        
         approx_g = Hx(Hinv_g)           # g
+        # print("g approximation error ", np.linalg.norm(approx_g - g))
         # q        = np.clip(Hinv_g.T @ approx_g, 0.0, None)  # g.T / H @ g
         # Analytical solution from the CPO paper (Appendix 10.2)
         # q = g.T * H^-1 * g
         q        = Hinv_g.T @ approx_g
 
+        # Hinv_b1 = cg(Hx,B[0])
+        # Hinv_b2 = cg(Hx,B[1])
+        # approx_b1 = Hx(Hinv_b1)
+        # approx_b2 = Hx(Hinv_b1)
+        # print("b1 approximation error ", np.linalg.norm(approx_b1 - B[0]))
+        # print("b2 approximation error ", np.linalg.norm(approx_b2 - B[1]))
+
         Hinv_B = np.array([cg(Hx, b) for b in B])
         approx_B = np.array([Hx(Hinv_b) for Hinv_b in Hinv_B])
+        # def verify_cg(Hx, B, Hinv_B, approx_B):
+        #     # Compute the residual for each column of B using Hx
+        #     residuals = [Hx(Hinv_b) - b for Hinv_b, b in zip(Hinv_B, B)]
+            
+        #     # Compute the norm of each residual
+        #     residual_norms = [np.linalg.norm(res) for res in residuals]
+            
+        #     # Check if the approximated B is close to the original B
+        #     approx_error = np.linalg.norm(approx_B - B)
+            
+        #     # Print the results
+        #     for i, norm in enumerate(residual_norms):
+        #         print(f"Residual norm for column {i+1}: {norm:.2e}")
+            
+        #     print(f"Approximation error: {approx_error:.2e}")
+
+        #     # Return True if all residuals are close to zero and the approximation error is small
+        #     return all(norm < 1e-6 for norm in residual_norms) and approx_error < 1e-6
+
+        # # Assuming Hx, B, Hinv_B, and approx_B are already defined
+        # is_correct = verify_cg(Hx, B, Hinv_B, approx_B)
+        # print("Implementation is correct:" if is_correct else "Implementation might be incorrect.")
         r = Hinv_B @ approx_g          # b^T H^{-1} g
-        S = Hinv_B @ approx_B.T        # b^T H^{-1} b
+        S =  approx_B @ Hinv_B.T      # b^T H^{-1} b
+        # S is supposed to be symmetric, something not right here
 
         # A = q - r**2 / s            # should be always positive (Cauchy-Shwarz)
         # # whether or not the plane of the linear constraint intersects the quadratic trust region, CPO paper appendix
@@ -595,6 +624,8 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         solver_start = time.time()
 
         # Use QP library to solve the QP
+        # Setup QP Solver
+        qp_solver = solver.QuadraticOptimizer(num_constraints)
         qp_solver.solve(c,q,r,S,target_kl)
         lam,nu,status = qp_solver.get_solution()
         if status == "Infeasible":
@@ -602,17 +633,17 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             #
             breakpoint()
             # First, check which constraints are infeasible
-            # Infeasible if c < 0 and c**2/s − δ < 
+            # Infeasible if c > 0 and c**2/s − δ > 
             # (the intersection of the quadratic trust region and linear constraint-satisfying halfspace is empty)
             
             s = np.array([approx_B[i] @ Hinv_B[i] for i in range(approx_B.shape[0])])
             # if element = 1, corresponding constraint is inseasible, 0 means it's not
-            infeasibility = np.where((c**2/s - target_kl > 0) & (c > 0), 1, 0)
+            infeasibility = infeasibility = np.where(((c**2/s - target_kl > 0) & (c > 0)), 1, 0)
             nu = np.sqrt(2 * target_kl / (s+EPS)) * infeasibility
-            x_direction = np.sum(nu * Hinv_B,axis=1)
+            x_direction = np.sum(nu[:, np.newaxis] * Hinv_B, axis=1)
         else:
             x_direction = (1./(lam+EPS)) * (Hinv_g + nu @ Hinv_B) 
-
+        
         # Stop timing
         solver_end = time.time()
 
