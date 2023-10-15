@@ -1,6 +1,6 @@
 import numpy as np
 from pyomo.environ import (AbstractModel, Var, Objective, Constraint, SolverFactory,Param,
-                           maximize, NonNegativeReals, RangeSet)
+                           minimize, maximize, NonNegativeReals, RangeSet)
 import unittest
 
 class QuadraticOptimizer:
@@ -12,8 +12,8 @@ class QuadraticOptimizer:
         self.model.I = RangeSet(self.m)
         
         # Define variables
-        self.model.lambda_var = Var(domain=NonNegativeReals)
-        self.model.nu = Var(self.model.I, domain=NonNegativeReals)
+        self.model.lambda_var = Var(domain=NonNegativeReals,initialize=0.5)
+        self.model.nu = Var(self.model.I, domain=NonNegativeReals,initialize=0.001)
 
         # Define parameters
         self.model.C = Param(self.model.I, mutable=True)

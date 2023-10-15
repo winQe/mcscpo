@@ -7,7 +7,7 @@ import gym
 import time
 import copy
 import scpo_core as core
-import scipy_solver as solver
+import qp_solver as solver
 from utils.logx import EpochLogger, setup_logger_kwargs, colorize
 from utils.mpi_pytorch import setup_pytorch_for_mpi, sync_params, mpi_avg_grads
 from utils.mpi_tools import mpi_fork, mpi_avg, proc_id, mpi_statistics_scalar, num_procs, mpi_sum
@@ -469,10 +469,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         g = auto_grad(loss_pi, ac.pi) # get the loss flatten gradient evaluted at pi old 
         B = np.array(auto_grad(surr_cost, ac.pi)) # get the cost increase flatten gradient evaluted at pi old
         # get the Episode cost
-        EpLen = logger.get_stats('EpLen')[0]
-        # should be an array, not right
-        EpMaxCost = logger.get_stats('EpMaxCost') #EpMaxCost = M, different compared to EpCost
-        assert len(EpMaxCost) == 2
+        EpMaxCost = np.array(logger.get_value('EpMaxCost')) #EpMaxCost = M, different compared to EpCost
         # cost constraint linearization
         '''
         original fixed target cost, in the context of mean adv of epochs
@@ -485,140 +482,25 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         fixed target cost, in the context of sum adv of epoch
         '''
         # if negative means M (maximum statewise cost) cost limit, thus infeasible
-        c = np.array(EpMaxCost) - np.array(target_cost)
+        c = np.squeeze(EpMaxCost - np.array(target_cost))
 
         # core calculation for SCPO
-        # Conjugate Gradient to calculate H^-1
+        # # Conjugate Gradient to calculate H^-1
         Hinv_g   = cg(Hx, g)             # Hinv_g = H^-1 * g        
         approx_g = Hx(Hinv_g)           # g
-        # print("g approximation error ", np.linalg.norm(approx_g - g))
-        # q        = np.clip(Hinv_g.T @ approx_g, 0.0, None)  # g.T / H @ g
         # Analytical solution from the CPO paper (Appendix 10.2)
         # q = g.T * H^-1 * g
         q        = Hinv_g.T @ approx_g
 
-        # Hinv_b1 = cg(Hx,B[0])
-        # Hinv_b2 = cg(Hx,B[1])
-        # approx_b1 = Hx(Hinv_b1)
-        # approx_b2 = Hx(Hinv_b1)
-        # print("b1 approximation error ", np.linalg.norm(approx_b1 - B[0]))
-        # print("b2 approximation error ", np.linalg.norm(approx_b2 - B[1]))
-
         Hinv_B = np.array([cg(Hx, b) for b in B])
         approx_B = np.array([Hx(Hinv_b) for Hinv_b in Hinv_B])
-        # def verify_cg(Hx, B, Hinv_B, approx_B):
-        #     # Compute the residual for each column of B using Hx
-        #     residuals = [Hx(Hinv_b) - b for Hinv_b, b in zip(Hinv_B, B)]
-            
-        #     # Compute the norm of each residual
-        #     residual_norms = [np.linalg.norm(res) for res in residuals]
-            
-        #     # Check if the approximated B is close to the original B
-        #     approx_error = np.linalg.norm(approx_B - B)
-            
-        #     # Print the results
-        #     for i, norm in enumerate(residual_norms):
-        #         print(f"Residual norm for column {i+1}: {norm:.2e}")
-            
-        #     print(f"Approximation error: {approx_error:.2e}")
 
-        #     # Return True if all residuals are close to zero and the approximation error is small
-        #     return all(norm < 1e-6 for norm in residual_norms) and approx_error < 1e-6
-
-        # # Assuming Hx, B, Hinv_B, and approx_B are already defined
-        # is_correct = verify_cg(Hx, B, Hinv_B, approx_B)
-        # print("Implementation is correct:" if is_correct else "Implementation might be incorrect.")
+        # # # Assuming Hx, B, Hinv_B, and approx_B are already defined
+        # # is_correct = verify_cg(Hx, B, Hinv_B, approx_B)
+        # # print("Implementation is correct:" if is_correct else "Implementation might be incorrect.")
         r = Hinv_B @ approx_g          # b^T H^{-1} g
         S =  approx_B @ Hinv_B.T      # b^T H^{-1} b
-        # S is supposed to be symmetric, something not right here
-
-        # A = q - r**2 / s            # should be always positive (Cauchy-Shwarz)
-        # # whether or not the plane of the linear constraint intersects the quadratic trust region, CPO paper appendix
-        # B = 2*target_kl - c**2 / s  # does safety boundary intersect trust region? (positive = yes)
-        
-        # # solve QP
-        # # decide optimization cases (feas/infeas, recovery)
-        # # Determine optim_case (switch condition for calculation,
-        # # based on geometry of constrained optimization problem)
-        # paper_timer = time.time()
-        # if np.any(b.T @ b <= 1e-8) and np.all(c < 0):
-        #     # cost grad is zero
-        #     # all area in trust region satisfy the constraints, don't need to consider constraints for this optimization
-        #     Hinv_b, r, s, A, B = 0, 0, 0, 0, 0
-        #     optim_case = 4
-        # else:
-        #     # cost grad is nonzero: SCPO update!
-        #     import ipdb; ipdb.set_trace()
-        #     Hinv_b = cg(Hx, b)                # H^{-1} b
-        #     r = Hinv_b.T @ approx_g          # b^T H^{-1} g
-        #     s = Hinv_b.T @ Hx(Hinv_b)        # b^T H^{-1} b
-        #     A = q - r**2 / s            # should be always positive (Cauchy-Shwarz)
-        #     # whether or not the plane of the linear constraint intersects the quadratic trust region, CPO paper appendix
-        #     B = 2*target_kl - c**2 / s  # does safety boundary intersect trust region? (positive = yes)
-
-        #     # c < 0: feasible
-
-        #     if c < 0 and B < 0:
-        #         # point in trust region is feasible and safety boundary doesn't intersect
-        #         # ==> entire trust region is feasible
-        #         # If c2=s − δ > 0 and c < 0, then the quadratic trust region lies entirely within the linear constraint-satisfying halfspace,
-        #         # and we can remove the linear constraint without changing the optimization problem
-        #         optim_case = 3
-        #     elif c < 0 and B >= 0:
-        #         # x = 0 is feasible and safety boundary intersects
-        #         # ==> most of trust region is feasible
-        #         optim_case = 2
-        #     elif c >= 0 and B >= 0:
-        #         # x = 0 is infeasible and safety boundary intersects
-        #         # ==> part of trust region is feasible, recovery possible
-        #         optim_case = 1
-        #         print(colorize(f'Alert! Attempting feasible recovery!', 'yellow', bold=True))
-        #     else:
-        #         # x = 0 infeasible, and safety halfspace is outside trust region
-        #         # ==> whole trust region is infeasible, try to fail gracefully
-        #         optim_case = 0
-        #         print(colorize(f'Alert! Attempting INFEASIBLE recovery!', 'red', bold=True))
-        
-        # print(colorize(f'optim_case: {optim_case}', 'magenta', bold=True))
-        
-        
-        # # get optimal theta-theta_k direction
-        # if optim_case in [3,4]:
-        #     # all area in trust region satisfy the constraints, don't need to consider constraints for this optimization
-        #     lam = np.sqrt(q / (2*target_kl))
-        #     nu = 0
-        # elif optim_case in [1,2]:
-        #     # bounds
-        #     LA, LB = [0, r /c], [r/c, np.inf]
-        #     LA, LB = (LA, LB) if c < 0 else (LB, LA)
-        #     # do the projection
-        #     proj = lambda x, L : max(L[0], min(L[1], x))
-        #     lam_a = proj(np.sqrt(A/B), LA)
-        #     lam_b = proj(np.sqrt(q/(2*target_kl)), LB)
-        #     f_a = lambda lam : -0.5 * (A / (lam+EPS) + B * lam) - r*c/(s+EPS)
-        #     f_b = lambda lam : -0.5 * (q / (lam+EPS) + 2 * target_kl * lam)
-        #     lam = lam_a if f_a(lam_a) >= f_b(lam_b) else lam_b
-        #     # nu = max(0, lam * c - r) / (np.clip(s,0.,None)+EPS)
-        #     nu = max(0, lam * c - r) / (s+EPS)
-        # else:
-        #     lam = 0
-        #     # nu = np.sqrt(2 * target_kl / (np.clip(s,0.,None)+EPS))
-        #      # decrease the constraint value, infeasibility recovery
-        #     nu = np.sqrt(2 * target_kl / (s+EPS))
-            
-        # lam_paper = lam
-        # nu_paper = nu
-        # # normal step if optim_case > 0, but for optim_case =0,
-        # # perform infeasible recovery: step to purely decrease cost
-        # # step in the paper
-        # # need to handle for multiple constraints as well, think about how???
-        # x_direction_paper = (1./(lam+EPS)) * (Hinv_g + nu * Hinv_b) if optim_case > 0 else nu * Hinv_b
-
-        # print("lambda and nu value from paper = [{},{}]".format(lam_paper,nu_paper))
-        # paper_end = time.time()
-        # paper_time = paper_end - paper_timer
-        # print(f"Time taken: {paper_time} seconds")
-
+        # # S is supposed to be symmetric, something not right here
 
         # Start timing
         solver_start = time.time()
@@ -631,7 +513,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if status == "Infeasible":
             # decrease the constraint value, infeasibility recovery
             #
-            breakpoint()
+            # breakpoint()
             # First, check which constraints are infeasible
             # Infeasible if c > 0 and c**2/s − δ > 
             # (the intersection of the quadratic trust region and linear constraint-satisfying halfspace is empty)
@@ -688,7 +570,6 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             if (kl.item() <= target_kl and
                 (pi_l_new.item() <= pi_l_old if status != "Infeasible" else True) and # if current policy is feasible (optim>1), must preserve pi loss
                 np.all((surr_cost_new.detach().cpu().numpy() - surr_cost_old) <= np.maximum(-c,-cost_reduction))):
-                
                 print(colorize(f'Accepting new params at step %d of line search.'%j, 'green', bold=False))
                 
                 # update the policy parameter 
