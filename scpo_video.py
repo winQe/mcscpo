@@ -25,7 +25,7 @@ def create_env(args):
     return env
 
 
-def replay(env_fn, model_path=None, video_name=None, max_epoch=1):
+def replay(env_fn, model_path=None, video_name=None, max_epoch=1, num_constraints=1):
     if not model_path:
         print("please specify a model path")
         raise NotImplementedError
@@ -42,7 +42,8 @@ def replay(env_fn, model_path=None, video_name=None, max_epoch=1):
     ep_ret = 0
     time_step = 0
     epoch = 0
-    M = 0. # initialize the current maximum cost
+    M = np.zeros(num_constraints, dtype=np.float32) # initialize the maximum cost a 0 per constraints
+
     o_aug = np.append(o, M) # augmented observation = observation + M 
     first_step = True
     
@@ -50,6 +51,9 @@ def replay(env_fn, model_path=None, video_name=None, max_epoch=1):
     
     # load the model 
     ac = torch.load(model_path)
+    get_costs = lambda info, constraints: np.array([info[key] for key in constraints if key != 'cost'])
+    constraints_list = []
+
     
     # evaluate the model 
     while True:
@@ -62,10 +66,11 @@ def replay(env_fn, model_path=None, video_name=None, max_epoch=1):
                 break
             ep_ret = 0
             o = env.reset()
-            M = 0. # initialize the current maximum cost 
+            M = np.zeros(num_constraints, dtype=np.float32) # initialize the maximum cost a 0 per constraints
             # o_aug = o.append(M) # augmented observation = observation + M 
-            o_bug = np.append(o, M) # augmented observation = observation + M 
+            o_aug = np.append(o, M) # augmented observation = observation + M 
             first_step = True
+            break
         
         try:
             a, v, vc, logp, _, _ = ac.step(torch.as_tensor(o_aug, dtype=torch.float32))
@@ -78,13 +83,17 @@ def replay(env_fn, model_path=None, video_name=None, max_epoch=1):
         
         if first_step:
             # the first step of each episode 
-            cost_increase = info['cost']
-            M_next = info['cost']
+            constraints_list = [key for key in info.keys()]
+            cost_increase =  get_costs(info, constraints_list)
+            # cost_increase = info['cost'] # define the new observation and cost for Maximum Markov Decision Process
+            M_next = cost_increase
             first_step = False
         else:
             # the second and forward step of each episode
-            cost_increase = max(info['cost'] - M, 0)
-            M_next = M + cost_increase 
+            costs = get_costs(info,constraints_list)
+            cost_increase = np.maximum(costs - M, 0)
+            M_next = M + cost_increase
+             
         
         # Update obs (critical!)
         # o = next_o
@@ -123,6 +132,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_epoch', type=int, default=1)  # the maximum number of epochs
     parser.add_argument('--model_path', type=str, default=None)
     parser.add_argument('--video_name', type=str, default=None)
+    parser.add_argument('--num_constraints', type=int, default=1) # Number of constraints
     args = parser.parse_args()
 
-    replay(lambda : create_env(args), model_path=args.model_path, video_name=args.video_name, max_epoch=args.max_epoch)
+    replay(lambda : create_env(args), model_path=args.model_path, video_name=args.video_name, max_epoch=args.max_epoch, num_constraints=args.num_constraints)
