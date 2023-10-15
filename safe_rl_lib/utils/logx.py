@@ -430,14 +430,16 @@ class EpochLogger(Logger):
         if val is not None:
             super().log_tabular(key,val)
         else:
+            #TODO: one epoch has too many path, need to average them out
             if key in ['EpCost','EpCostRet','EpMaxCost','DeltaLossCost','LossCost']:
-                assert len(self.epoch_dict[key]) == 1
-                v = self.epoch_dict[key][-1]
-                for i in range(len(v)):
-                    if(key == 'EpCost' or key == 'EpCostRet' and i == len(v)-1):
-                        super().log_tabular(key,v[i])
+                v = self.epoch_dict[key]
+                vals = np.vstack(v)
+                average_val = np.mean(vals, axis=0)
+                for i in range(len(average_val)):
+                    if(key == 'EpCost' or key == 'EpCostRet' and i == len(average_val)-1):
+                        super().log_tabular(key,average_val[i])
                         break
-                    super().log_tabular(key + str(i+1),v[i])
+                    super().log_tabular(key + str(i+1),average_val[i])
                     
             else:    
                 v = self.epoch_dict[key]
