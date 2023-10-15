@@ -430,15 +430,25 @@ class EpochLogger(Logger):
         if val is not None:
             super().log_tabular(key,val)
         else:
-            v = self.epoch_dict[key]
-            vals = np.concatenate(v) if isinstance(v[0], np.ndarray) and len(v[0].shape)>0 else v
-            stats = mpi_statistics_scalar(vals, with_min_and_max=with_min_and_max)
-            super().log_tabular(key if average_only else 'Average' + key, stats[0])
-            if not(average_only):
-                super().log_tabular('Std'+key, stats[1])
-            if with_min_and_max:
-                super().log_tabular('Max'+key, stats[3])
-                super().log_tabular('Min'+key, stats[2])
+            if key in ['EpCost','EpCostRet','EpMaxCost','DeltaLossCost','LossCost']:
+                assert len(self.epoch_dict[key]) == 1
+                v = self.epoch_dict[key][-1]
+                for i in range(len(v)):
+                    if(key == 'EpCost' or key == 'EpCostRet' and i == len(v)-1):
+                        super().log_tabular(key,v[i])
+                        break
+                    super().log_tabular(key + str(i+1),v[i])
+                    
+            else:    
+                v = self.epoch_dict[key]
+                vals = np.concatenate(v) if isinstance(v[0], np.ndarray) and len(v[0].shape)>0 else v
+                stats = mpi_statistics_scalar(vals, with_min_and_max=with_min_and_max)
+                super().log_tabular(key if average_only else 'Average' + key, stats[0])
+                if not(average_only):
+                    super().log_tabular('Std'+key, stats[1])
+                if with_min_and_max:
+                    super().log_tabular('Max'+key, stats[3])
+                    super().log_tabular('Min'+key, stats[2])
         self.epoch_dict[key] = []
 
     def get_stats(self, key):
@@ -448,3 +458,9 @@ class EpochLogger(Logger):
         v = self.epoch_dict[key]
         vals = np.concatenate(v) if isinstance(v[0], np.ndarray) and len(v[0].shape)>0 else v
         return mpi_statistics_scalar(vals)
+    
+    def get_value(self,key):
+        """
+        Return value directly without getting any statistics
+        """
+        return self.epoch_dict[key]
