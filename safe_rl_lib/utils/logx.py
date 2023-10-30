@@ -435,7 +435,7 @@ class EpochLogger(Logger):
                 vals = np.vstack(v)
                 average_val = np.mean(vals, axis=0)
                 for i in range(len(average_val)):
-                    if(key == 'EpCost' or key == 'EpCostRet' and i == len(average_val)-1):
+                    if((key == 'EpCost' or key == 'EpCostRet') and i == len(average_val)-1):
                         super().log_tabular(key,average_val[i])
                         break
                     super().log_tabular(key + str(i+1),average_val[i])
