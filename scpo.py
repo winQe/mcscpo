@@ -88,7 +88,6 @@ class SCPOBuffer:
         # cost advantage calculation
         cost_deltas = costs[:-1] + self.cgamma * cost_vals[1:] - cost_vals[:-1]
         self.adc_buf[path_slice] = core.discount_cumsum(cost_deltas, self.cgamma * self.clam) # AD
-        
         # the next line computes rewards-to-go, to be targets for the value function
         self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1] # Actual return
         
@@ -110,8 +109,15 @@ class SCPOBuffer:
         self.adv_buf = (self.adv_buf - adv_mean) / adv_std
 
         # center cost advantage, but don't scale
-        adc_mean, adc_std = mpi_statistics_scalar(self.adc_buf)
-        self.adc_buf = (self.adc_buf - adc_mean)
+
+        adc_mean = np.zeros(self.adc_buf.shape[1])
+        adc_std = np.zeros(self.adc_buf.shape[1])
+
+        for i in range(self.adc_buf.shape[1]):
+            column_data = self.adc_buf[:, i]
+            adc_mean[i], adc_std[i] = mpi_statistics_scalar(column_data)
+        
+        self.adc_buf = self.adc_buf - adc_mean[np.newaxis, :]
 
         data = dict(obs=torch.FloatTensor(self.obs_buf).to(device), 
                     act=torch.FloatTensor(self.act_buf).to(device), 
@@ -523,8 +529,12 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             infeasibility = infeasibility = np.where(((c**2/s - target_kl > 0) & (c > 0)), 1, 0)
             nu = np.sqrt(2 * target_kl / (s+EPS)) * infeasibility
             x_direction = np.sum(nu[:, np.newaxis] * Hinv_B, axis=1)
+            logger.store(Infeasible=1)
+
         else:
-            x_direction = (1./(lam+EPS)) * (Hinv_g + nu @ Hinv_B) 
+            x_direction = (1./(lam+EPS)) * (Hinv_g + nu @ Hinv_B)
+            logger.store(Infeasible=0)
+ 
         
         # Stop timing
         solver_end = time.time()
@@ -627,6 +637,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     o_aug = np.append(o, M) # augmented observation = observation + M 
     first_step = True
     constraints_list = []
+    first_epoch = True
 
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
@@ -639,12 +650,15 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 assert 'cost' in info.keys()
             except: 
                 # simulation exception discovered, discard this episode 
-                next_o, r, d = o, 0, True # observation will not change, no reward when episode done 
-                info['cost'] = 0 # no cost when episode done    
-            
+                next_o, r, d = o, 0, True # observation will not change, no reward when episode done
+                for cost in info.keys():
+                    info[cost] = 0 
+                # no cost when episode done
+            if first_epoch:
+                constraints_list = [key for key in info.keys()]
+                first_epoch = False
             if first_step:
                 # the first step of each episode
-                constraints_list = [key for key in info.keys()]
                 cost_increase =  get_d(info, constraints_list)
                 # cost_increase = info['cost'] # define the new observation and cost for Maximum Markov Decision Process
                 M_next = cost_increase
@@ -652,12 +666,15 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             else:
                 # the second and forward step of each episode
                 # cost increase = D, to be constrained to ensure state-wise safety, constraining maximum violation in state transition -> enforcing statewise safety
-                costs_D = np.array(get_d(info, constraints_list))
+                try:
+                    costs_D = np.array(get_d(info, constraints_list))
+                except:
+                    import ipdb; ipdb.set_trace()
+                    # Handle exceptions here
                 cost_increase = np.maximum(costs_D - M, 0)
                 M_next = M + cost_increase
              
             # Track cumulative cost over training
-            # TODO: log each cost (cost1 cost2 cost3)
             cum_cost += info['cost'] # not equal to M
             ep_ret += r
             ep_cost_ret += get_costs(info, constraints_list) * (gamma ** t)
@@ -692,6 +709,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 if terminal:
                     # only save EpRet / EpLen / EpCostRet if trajectory finished
                     # EpMaxCost = Max MDP M, while EpCost is just CMDP, it's Maximum state-wise cost, cannot be canceled out with negative cost if that even exist
+                    # 1 epoch containts lots of path
                     logger.store(EpRet=ep_ret, EpLen=ep_len, EpCostRet=ep_cost_ret, EpCost=ep_cost, EpMaxCost=M)
                 while True:
                     try:
@@ -738,6 +756,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         logger.log_tabular('Entropy', average_only=True)
         logger.log_tabular('KL', average_only=True)
         logger.log_tabular('Time', time.time()-start_time)
+        logger.log_tabular('Infeasible', average_only=True)
         logger.dump_tabular()
         
         
