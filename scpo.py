@@ -506,7 +506,6 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # # print("Implementation is correct:" if is_correct else "Implementation might be incorrect.")
         r = Hinv_B @ approx_g          # b^T H^{-1} g
         S =  approx_B @ Hinv_B.T      # b^T H^{-1} b
-        # # S is supposed to be symmetric, something not right here
 
         # Start timing
         solver_start = time.time()
@@ -516,19 +515,19 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         qp_solver = solver.QuadraticOptimizer(num_constraints)
         qp_solver.solve(c,q,r,S,target_kl)
         lam,nu,status = qp_solver.get_solution()
+        breakpoint()
         if status == "Infeasible":
-            # decrease the constraint value, infeasibility recovery
-            #
-            # breakpoint()
-            # First, check which constraints are infeasible
-            # Infeasible if c > 0 and c**2/s − δ > 
-            # (the intersection of the quadratic trust region and linear constraint-satisfying halfspace is empty)
-            
-            s = np.array([approx_B[i] @ Hinv_B[i] for i in range(approx_B.shape[0])])
-            # if element = 1, corresponding constraint is inseasible, 0 means it's not
-            infeasibility = infeasibility = np.where(((c**2/s - target_kl > 0) & (c > 0)), 1, 0)
-            nu = np.sqrt(2 * target_kl / (s+EPS)) * infeasibility
-            x_direction = np.sum(nu[:, np.newaxis] * Hinv_B, axis=1)
+            # Recovery scheme
+            # Find the direction that purely decreases total cost
+            # Sum all the cost gradient, perform similar recovery to the SCPO paper
+            # Will decrease total cost but might increase one of the cost
+            b_sum = np.sum(B, axis=0, keepdims=True)
+            Hinv_b_sum = cg(Hx,b_sum)
+            approx_b_sum = Hx(Hinv_b_sum)
+            s_sum = Hinv_b_sum.T @ approx_b_sum
+
+            nu = np.sqrt(2 * target_kl / (s_sum+EPS))
+            x_direction = nu * Hinv_b_sum
             logger.store(Infeasible=1)
 
         else:
@@ -542,21 +541,6 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         np.set_printoptions(precision=4, suppress=True)
         print("lambda and nu value from solver = [{},{}]".format(lam,nu))
         print(f"Time taken: {solver_end - solver_start} seconds")
-
-        # # Quantitative Comparison
-        # # L2 distance
-        # l2_distance = np.linalg.norm(x_direction_paper - x_direction)
-        # print(f"L2 distance between methods: {l2_distance}")
-
-        # # Cosine similarity
-        # dot_product = np.dot(x_direction_paper, x_direction)
-        # norm_product = np.linalg.norm(x_direction_paper) * np.linalg.norm(x_direction)
-        # cosine_similarity = dot_product / (norm_product + EPS)
-        # print(f"Cosine similarity between methods: {cosine_similarity}")
-
-        # # L1 difference
-        # l1_difference = np.mean(np.abs(x_direction_paper - x_direction))
-        # print(f"Mean absolute difference between methods: {l1_difference}")
 
         # copy an actor to conduct line search 
         actor_tmp = copy.deepcopy(ac.pi)
@@ -577,9 +561,10 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             except:
                 import ipdb; ipdb.set_trace()
 
-            if (kl.item() <= target_kl and
-                (pi_l_new.item() <= pi_l_old if status != "Infeasible" else True) and # if current policy is feasible (optim>1), must preserve pi loss
-                np.all((surr_cost_new.detach().cpu().numpy() - surr_cost_old) <= np.maximum(-c,-cost_reduction))):
+            if (status != "Infeasible" and kl.item() <= target_kl and
+                (pi_l_new.item() <= pi_l_old) and # if current policy is feasible (optim>1), must preserve pi loss
+                np.all((surr_cost_new.detach().cpu().numpy() - surr_cost_old) <= np.maximum(-c,-cost_reduction)) or 
+                (status == "Infeasible" and np.sum((surr_cost_new.detach().cpu().numpy() - surr_cost_old)) <= max(-np.sum(c),-np.sum(cost_reduction)))):
                 print(colorize(f'Accepting new params at step %d of line search.'%j, 'green', bold=False))
                 
                 # update the policy parameter 
@@ -641,6 +626,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
+        trajectory_index = 0
         for t in range(local_steps_per_epoch):
             # Forward, get action and value estimates (cost and reward) for the current observation
             a, v, vcs, logp, mu, logstd = ac.step(torch.as_tensor(o_aug, dtype=torch.float32))
@@ -711,6 +697,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                     # EpMaxCost = Max MDP M, while EpCost is just CMDP, it's Maximum state-wise cost, cannot be canceled out with negative cost if that even exist
                     # 1 epoch containts lots of path
                     logger.store(EpRet=ep_ret, EpLen=ep_len, EpCostRet=ep_cost_ret, EpCost=ep_cost, EpMaxCost=M)
+                    trajectory_index += 1
                 while True:
                     try:
                         o, ep_ret, ep_len = env.reset(), 0, 0
@@ -757,6 +744,7 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         logger.log_tabular('KL', average_only=True)
         logger.log_tabular('Time', time.time()-start_time)
         logger.log_tabular('Infeasible', average_only=True)
+        logger.log_tabular('NumberOfTrajectories',trajectory_index)
         logger.dump_tabular()
         
         
