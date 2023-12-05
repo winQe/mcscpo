@@ -515,13 +515,13 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         qp_solver = solver.QuadraticOptimizer(num_constraints)
         qp_solver.solve(c,q,r,S,target_kl)
         lam,nu,status = qp_solver.get_solution()
-        breakpoint()
+
         if status == "Infeasible":
             # Recovery scheme
             # Find the direction that purely decreases total cost
             # Sum all the cost gradient, perform similar recovery to the SCPO paper
             # Will decrease total cost but might increase one of the cost
-            b_sum = np.sum(B, axis=0, keepdims=True)
+            b_sum = np.sum(B, axis=0).ravel()
             Hinv_b_sum = cg(Hx,b_sum)
             approx_b_sum = Hx(Hinv_b_sum)
             s_sum = Hinv_b_sum.T @ approx_b_sum
@@ -553,6 +553,12 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             
             return kl, pi_l, surr_cost
         
+        def is_cost_within_threshold(new_cost, old_cost, threshold):
+         return np.all(new_cost - old_cost <= threshold)
+
+        def is_sum_cost_within_threshold(new_cost, old_cost, threshold):
+            return np.sum(new_cost - old_cost) <= threshold
+        
         # update the policy such that the KL diveragence constraints are satisfied and loss is decreasing
         # backtracking line search to enforce constraint satisfaction
         for j in range(backtrack_iters):
@@ -560,13 +566,23 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 kl, pi_l_new, surr_cost_new = set_and_eval(backtrack_coeff**j)
             except:
                 import ipdb; ipdb.set_trace()
+            
+            # Compute detached and CPU-bound cost difference
+            cost_diff = surr_cost_new.detach().cpu().numpy() - surr_cost_old
 
-            if (status != "Infeasible" and kl.item() <= target_kl and
-                (pi_l_new.item() <= pi_l_old) and # if current policy is feasible (optim>1), must preserve pi loss
-                np.all((surr_cost_new.detach().cpu().numpy() - surr_cost_old) <= np.maximum(-c,-cost_reduction)) or 
-                (status == "Infeasible" and np.sum((surr_cost_new.detach().cpu().numpy() - surr_cost_old)) <= max(-np.sum(c),-np.sum(cost_reduction)))):
+            # Define conditions for clarity
+            is_feasible = status != "Infeasible"
+            is_infeasible = status == "Infeasible"
+            kl_within_target = kl.item() <= target_kl
+            policy_loss_improved = pi_l_new.item() <= pi_l_old # if current policy is feasible (optim>1), must preserve pi loss
+            cost_within_threshold = is_cost_within_threshold(cost_diff, np.maximum(-c, -cost_reduction))
+            sum_cost_within_threshold = is_sum_cost_within_threshold(cost_diff, max(-np.sum(c), -np.sum(cost_reduction)))
+
+            # Refactored conditional statement
+            if ((is_feasible and kl_within_target and policy_loss_improved and cost_within_threshold) or
+                (is_infeasible and sum_cost_within_threshold)):
                 print(colorize(f'Accepting new params at step %d of line search.'%j, 'green', bold=False))
-                
+
                 # update the policy parameter 
                 new_param = get_net_param_np_vec(ac.pi) - backtrack_coeff**j * x_direction
                 assign_net_param_from_flat(new_param, ac.pi)
