@@ -102,6 +102,42 @@ def configuration_list(task):
             'hazards_size': 0.3,
         }
 
+    if task == "Goal_Point_Multi333":
+        config = {
+            # robot setting
+            'robot_base': 'xmls/point.xml',  
+
+            # task setting
+            'task': 'goal',
+            'goal_size': 0.5,
+
+            # observation setting
+            'observe_goal_comp': True,  # Observe the goal with a lidar sensor
+            'observe_ghosts': True,  # Observe the vector from agent to hazards
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            'observe_pillars': True,
+            
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_hazards': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+            'constrain_pillars': True,
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 3,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+
+            # object setting
+            'hazards_num': 3,
+            'hazards_size': 0.3,
+
+            'pillars_num' : 3
+        }
+
     if task == "Goal_Swimmer_Multi88":
         config = {
             # robot setting
@@ -135,6 +171,85 @@ def configuration_list(task):
             # object setting
             'hazards_num': 8,
             'hazards_size': 0.3,
+        }
+
+    if task == "Goal_Swimmer_Multi333":
+        config = {
+            # robot setting
+            'robot_base': 'xmls/swimmer.xml',  
+
+            # task setting
+            'task': 'goal',
+            'goal_size': 0.5,
+
+            # observation setting
+            'observe_goal_comp': True,  # Observe the goal with a lidar sensor
+            'observe_ghosts': True,  # Observe the vector from agent to hazards
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            # 'observe_pillars': True,
+            'sensors_obs': ['accelerometer', 'velocimeter', 'gyro', 'magnetometer',
+                            'touch_point1', 'touch_point2', 'touch_point3', 'touch_point4'],
+
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_hazards': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+            'constrain_pillars': True,
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 3,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+
+            # object setting
+            'hazards_num': 3,
+            'hazards_size': 0.3,
+
+            'pillars_num' : 3
+        }
+
+
+    if task == "Goal_Ant_Multi333":
+        config = {
+            # robot setting
+            'robot_base': 'xmls/ant.xml',  
+
+            # task setting
+            'task': 'goal',
+            'goal_size': 0.5,
+
+            # observation setting
+            'observe_goal_comp': True,  # Observe the goal with a lidar sensor
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            'observe_ghosts': True,  # Observe the vector from agent to hazards
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            # 'observe_pillars': True,
+            'sensors_obs': ['accelerometer', 'velocimeter', 'gyro', 'magnetometer',
+                            'touch_ankle_1a', 'touch_ankle_2a', 'touch_ankle_3a', 'touch_ankle_4a',
+                            'touch_ankle_1b', 'touch_ankle_2b', 'touch_ankle_3b', 'touch_ankle_4b'],
+
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_hazards': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+            'constrain_pillars': True,
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 3,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+
+            # object setting
+            'hazards_num': 3,
+            'hazards_size': 0.3,
+
+            'pillars_num' : 3
         }
 
     if task == "Goal_Swimmer_8Hazards":
@@ -306,6 +421,44 @@ def configuration_list(task):
             'ghosts_size': 0.3,
             'ghosts_travel':2.5,
             'ghosts_safe_dist': 1.5,
+        }
+    if task == "Goal_Walker_Multi333":
+        config = {
+            # robot setting
+            'robot_base': 'xmls/walker.xml',  
+
+            # task setting
+            'task': 'goal',
+            'goal_size': 0.5,
+
+            # observation setting
+            'observe_goal_comp': True,  # Observe the goal with a lidar sensor
+            'sensors_obs': ['accelerometer', 'velocimeter', 'gyro', 'magnetometer',
+                            'touch_right_foot', 'touch_left_foot'],
+            'observe_ghosts': True,  # Observe the vector from agent to hazards
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            # 'observe_pillars': True,
+            
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_hazards': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+            'constrain_pillars': True,
+
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 3,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+
+            # object setting
+            'hazards_num': 3,
+            'hazards_size': 0.3,
+
+            'pillars_num' : 3
         }
 
     if task == "Goal_Humanoid_8Hazards":
@@ -706,6 +859,43 @@ def configuration_list(task):
             'ghosts_safe_dist': 1.5,
         }
 
+    if task == "Push_Point_Multi333":
+        config = {
+            # robot setting
+            'robot_base': 'xmls/point.xml',  
+
+            # task setting
+            'task': 'push',
+            'push_object': 'ball',
+            'goal_size': 0.5,
+
+            # observation setting
+            'observe_goal_comp': True,  # Observe the goal with a lidar sensor
+            'observe_box_comp': True,   # Observe the box with a lidar sensor
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            'observe_ghosts': True,  # Observe the vector from agent to hazards
+            # 'observe_pillars': True,            
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_hazards': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+            'constrain_pillars': True,
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 3,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+
+            # object setting
+            'hazards_num': 3,
+            'hazards_size': 0.3,
+
+            'pillars_num' : 3
+        }
+
     if task == "Push_Swimmer_8Hazards":
         config = {
             # robot setting
@@ -764,6 +954,87 @@ def configuration_list(task):
             'ghosts_size': 0.3,
             'ghosts_travel':2.5,
             'ghosts_safe_dist': 1.5,
+        }
+
+    if task == "Push_Swimmer_Multi333":
+        config = {
+            # robot setting
+            'robot_base': 'xmls/swimmer.xml',  
+
+            # task setting
+            'task': 'push',
+            'push_object': 'ball',
+            'goal_size': 0.5,
+
+            # observation setting
+            'observe_goal_comp': True,  # Observe the goal with a lidar sensor
+            'observe_box_comp': True,   # Observe the box with a lidar sensor
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            'observe_ghosts': True,  # Observe the vector from agent to hazards
+            # 'observe_pillars': True,      
+            'sensors_obs': ['accelerometer', 'velocimeter', 'gyro', 'magnetometer',
+                            'touch_point1', 'touch_point2', 'touch_point3', 'touch_point4'],
+            
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_hazards': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+            'constrain_pillars': True,
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 3,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+
+            # object setting
+            'hazards_num': 3,
+            'hazards_size': 0.3,
+
+            'pillars_num' : 3
+        }
+
+    if task == "Push_Ant_Multi333":
+        config = {
+            # robot setting
+            'robot_base': 'xmls/ant.xml',  
+
+            # task setting
+            'task': 'push',
+            'push_object': 'ball',
+            'goal_size': 0.5,
+
+            # observation setting
+            'observe_goal_comp': True,  # Observe the goal with a lidar sensor
+            'observe_box_comp': True,   # Observe the box with a lidar sensor
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            'observe_ghosts': True,  # Observe the vector from agent to hazards
+            # 'observe_pillars': True,
+            'sensors_obs': ['accelerometer', 'velocimeter', 'gyro', 'magnetometer',
+                            'touch_ankle_1a', 'touch_ankle_2a', 'touch_ankle_3a', 'touch_ankle_4a',
+                            'touch_ankle_1b', 'touch_ankle_2b', 'touch_ankle_3b', 'touch_ankle_4b'],
+
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_hazards': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+            'constrain_pillars': True,
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 3,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+
+            # object setting
+            'hazards_num': 3,
+            'hazards_size': 0.3,
+
+            'pillars_num' : 3
         }
 
     if task == "Push_Ant_8Hazards":
@@ -1302,6 +1573,57 @@ def configuration_list(task):
             'robbers_size': 0.3,
         }
 
+    if task == "Chase_Point_Multi333":
+        config = {
+            # robot setting
+            'robot_base': 'xmls/point.xml',  
+
+            # task setting
+            'task': 'chase',
+            'goal_size': 0.5,
+
+            # observation setting
+            'observe_robbers': True,  # Observe the goal with a lidar sensor
+            'observe_ghosts': True,  # Observe the vector from agent to hazards
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            # 'observe_pillars': True,
+            
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': False,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 8,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+            'robbers_num': 2,
+            'robbers_size': 0.3,
+
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_hazards': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+            'constrain_pillars': True,
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 3,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+
+            # object setting
+            'hazards_num': 3,
+            'hazards_size': 0.3,
+
+            'pillars_num' : 3
+        }
+
     if task == "Chase_Swimmer_8Hazards":
         config = {
             # robot setting
@@ -1360,6 +1682,55 @@ def configuration_list(task):
             'ghosts_safe_dist': 1.5,
             'robbers_num': 2,
             'robbers_size': 0.3,
+        }
+    
+    if task == "Chase_Swimmer_Multi333":
+        config = {
+            # robot setting
+            'robot_base': 'xmls/swimmer.xml',  
+
+            # task setting
+            'task': 'chase',
+            'goal_size': 0.5,
+
+            # observation setting
+            'observe_robbers': True,  # Observe the goal with a lidar sensor
+            'observe_ghosts': True,  # Observe the vector from agent to hazards
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            # 'observe_pillars': True,
+            'sensors_obs': ['accelerometer', 'velocimeter', 'gyro', 'magnetometer',
+                'touch_point1', 'touch_point2', 'touch_point3', 'touch_point4'],
+
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 8,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+            'robbers_num': 2,
+            'robbers_size': 0.3,
+
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_hazards': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+            'constrain_pillars': True,
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 3,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+
+            # object setting
+            'hazards_num': 3,
+            'hazards_size': 0.3,
+
+            'pillars_num' : 3
         }
 
     if task == "Chase_Ant_8Hazards":
@@ -1423,6 +1794,55 @@ def configuration_list(task):
             'ghosts_safe_dist': 1.5,
             'robbers_num': 2,
             'robbers_size': 0.3,
+        }
+    
+    if task == "Chase_Ant_Multi333":
+        config = {
+            # robot setting
+            'robot_base': 'xmls/ant.xml',  
+
+            # task setting
+            'task': 'chase',
+            'goal_size': 0.5,
+
+            # observation setting
+            'observe_robbers': True,  # Observe the goal with a lidar sensor
+            'observe_ghosts': True,  # Observe the vector from agent to hazards
+            'observe_hazards': True,  # Observe the vector from agent to hazards
+            # 'observe_pillars': True,
+            'sensors_obs': ['accelerometer', 'velocimeter', 'gyro', 'magnetometer',
+                            'touch_ankle_1a', 'touch_ankle_2a', 'touch_ankle_3a', 'touch_ankle_4a',
+                            'touch_ankle_1b', 'touch_ankle_2b', 'touch_ankle_3b', 'touch_ankle_4b'],
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 8,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+            'robbers_num': 2,
+            'robbers_size': 0.3,
+
+            # constraint setting
+            'constrain_ghosts': True,  # Constrain robot from being in hazardous areas
+            'constrain_hazards': True,  # Constrain robot from being in hazardous areas
+            'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step. If false, then we get dense cost.
+            'constrain_pillars': True,
+            # lidar setting
+            'lidar_num_bins': 16,
+            
+            # object setting
+            'ghosts_num': 3,
+            'ghosts_size': 0.3,
+            'ghosts_travel':2.5,
+            'ghosts_safe_dist': 1.5,
+
+            # object setting
+            'hazards_num': 3,
+            'hazards_size': 0.3,
+
+            'pillars_num' : 3
         }
     
     if task == "Chase_Walker_8Hazards":
