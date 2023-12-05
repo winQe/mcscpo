@@ -567,16 +567,13 @@ def scpo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             except:
                 import ipdb; ipdb.set_trace()
             
-            # Compute detached and CPU-bound cost difference
-            cost_diff = surr_cost_new.detach().cpu().numpy() - surr_cost_old
-
             # Define conditions for clarity
             is_feasible = status != "Infeasible"
             is_infeasible = status == "Infeasible"
             kl_within_target = kl.item() <= target_kl
             policy_loss_improved = pi_l_new.item() <= pi_l_old # if current policy is feasible (optim>1), must preserve pi loss
-            cost_within_threshold = is_cost_within_threshold(cost_diff, np.maximum(-c, -cost_reduction))
-            sum_cost_within_threshold = is_sum_cost_within_threshold(cost_diff, max(-np.sum(c), -np.sum(cost_reduction)))
+            cost_within_threshold = is_cost_within_threshold(surr_cost_new.detach().cpu().numpy(), surr_cost_old, np.maximum(-c, -cost_reduction))
+            sum_cost_within_threshold = is_sum_cost_within_threshold(surr_cost_new.detach().cpu().numpy(), surr_cost_old, max(-np.sum(c), -np.sum(cost_reduction)))
 
             # Refactored conditional statement
             if ((is_feasible and kl_within_target and policy_loss_improved and cost_within_threshold) or
